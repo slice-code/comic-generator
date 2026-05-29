@@ -1,0 +1,6 @@
+arms_cache/
+.qoder/
+*.txt
+.env.local
+*.db
+node_modules/

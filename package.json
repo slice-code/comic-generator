@@ -1,0 +1,13 @@
+{
+  "name": "comic-generator",
+  "version": "1.0.0",
+  "description": "Comic Generator with el.js and Gemini Nano Banana",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "sqlite3": "^5.1.7"
+  }
+}
