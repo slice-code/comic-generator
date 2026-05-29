@@ -6,7 +6,7 @@ const https = require('https');
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./comic-references.db');
 
-const PORT = 3000;
+const PORT = 8010;
 
 // Load .env.local
 function loadEnv(filePath) {
