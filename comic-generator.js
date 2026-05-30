@@ -3,6 +3,30 @@ const BACKEND_URL = '/api';
 const TYPE_LABELS = { character: 'Character', object: 'Object', location: 'Location' };
 const TYPE_COLORS = { character: '#3b82f6', object: '#10b981', location: '#f59e0b' };
 
+/** Sinkron dengan server.js — fallback jika /api/config belum load */
+const MODEL_CATALOG_FALLBACK = {
+  prompt: [
+    { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', tier: 'free', note: 'Default — rekomendasi perhalus prompt. Cepat, kuota gratis harian.' },
+    { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', tier: 'free', note: 'Versi lebih ringan 2.5, hemat kuota.' },
+    { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', tier: 'limited', note: 'Kualitas tertinggi 2.5, gratis terbatas.' },
+    { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', tier: 'free', note: 'Generasi 2.0, cepat, kuota gratis.' },
+    { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite', tier: 'free', note: 'Paling ringan, kuota gratis besar.' },
+    { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', tier: 'free', note: 'Legacy stabil, gratis terbatas.' },
+    { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro', tier: 'limited', note: 'Legacy pro, gratis terbatas.' }
+  ],
+  image: [
+    { id: 'gemini-2.5-flash-image', label: 'Nano Banana (2.5 Flash Image)', tier: 'free', note: 'Default — generate gambar komik.' },
+    { id: 'gemini-2.0-flash-preview-image-generation', label: 'Gemini 2.0 Flash Image (Preview)', tier: 'limited', note: 'Alternatif generate gambar, gratis terbatas.' }
+  ]
+};
+
+function modelTierSuffix(tier) {
+  if (tier === 'free') return ' (Gratis)';
+  if (tier === 'limited') return ' (Gratis terbatas)';
+  if (tier === 'paid') return ' (Berbayar)';
+  return '';
+}
+
 function toImageSrc(imageBase64) {
   if (!imageBase64) return '';
   if (String(imageBase64).startsWith('data:')) return imageBase64;
@@ -33,8 +57,102 @@ export function createComicGeneratorPage() {
     uploadName: '',
     uploadType: 'character',
     searchQuery: '',
-    filterType: 'all'
+    filterType: 'all',
+    modelConfig: null,
+    promptModel: 'gemini-2.5-flash',
+    imageModel: 'gemini-2.5-flash-image',
+    comicStyle: 'manga',
+    cameraAngle: 'medium',
+    narrator: ''
   };
+
+  function getComicOptions() {
+    return {
+      comic_style: state.comicStyle,
+      camera_angle: state.cameraAngle,
+      narrator: state.narrator.trim()
+    };
+  }
+
+  async function fetchModelConfig() {
+    try {
+      const res = await fetch(`${BACKEND_URL}/config`);
+      const data = await res.json();
+      if (data.success) {
+        state.modelConfig = data.data;
+        state.promptModel = data.data.defaults.prompt;
+        state.imageModel = data.data.defaults.image;
+        renderModelSelects();
+        if (!data.data.hasApiKey) {
+          layout.toast('GEMINI_API_KEY belum di-set di .env.local', { type: 'warning' });
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load model config:', e);
+    }
+  }
+
+  function getModelLabel(modelId, type) {
+    const list = state.modelConfig?.models?.[type] || [];
+    const found = list.find(m => m.id === modelId);
+    return found ? found.label : modelId;
+  }
+
+  function getModelNote(modelId, type) {
+    const list = state.modelConfig?.models?.[type] || [];
+    const found = list.find(m => m.id === modelId);
+    return found ? found.note : '';
+  }
+
+  function updateModelHints() {
+    if (refs.promptModelHint) {
+      const note = getModelNote(state.promptModel, 'prompt');
+      const tier = state.modelConfig?.models?.prompt?.find(m => m.id === state.promptModel)?.tier;
+      const tierText = tier === 'free' ? 'Gratis' : tier === 'limited' ? 'Gratis terbatas' : tier === 'paid' ? 'Berbayar' : '';
+      refs.promptModelHint.textContent = note + (tierText ? ` · ${tierText}` : '');
+    }
+    if (refs.imageModelHint) {
+      const note = getModelNote(state.imageModel, 'image');
+      const tier = state.modelConfig?.models?.image?.find(m => m.id === state.imageModel)?.tier;
+      const tierText = tier === 'free' ? 'Gratis' : tier === 'limited' ? 'Gratis terbatas' : tier === 'paid' ? 'Berbayar' : '';
+      refs.imageModelHint.textContent = note + (tierText ? ` · ${tierText}` : '');
+    }
+  }
+
+  function buildModelSelectOptions(models, selectedId) {
+    return (models || []).map(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = `${m.label}${modelTierSuffix(m.tier)}`;
+      if (m.id === selectedId) opt.selected = true;
+      return opt;
+    });
+  }
+
+  function renderModelSelects() {
+    const catalog = state.modelConfig?.models || MODEL_CATALOG_FALLBACK;
+
+    if (refs.promptModelSelect) {
+      el(refs.promptModelSelect)
+        .clear()
+        .child(buildModelSelectOptions(catalog.prompt, state.promptModel))
+        .get();
+      refs.promptModelSelect.value = state.promptModel;
+    }
+
+    if (refs.imageModelSelect) {
+      el(refs.imageModelSelect)
+        .clear()
+        .child(buildModelSelectOptions(catalog.image, state.imageModel))
+        .get();
+      refs.imageModelSelect.value = state.imageModel;
+    }
+
+    updateModelHints();
+    if (refs.headerModelLabel) {
+      refs.headerModelLabel.textContent = 'Model gambar: ' + getModelLabel(state.imageModel, 'image');
+    }
+  }
 
   // API Functions
   async function fetchReferences() {
@@ -48,8 +166,8 @@ export function createComicGeneratorPage() {
     } catch (error) {
       console.error('Failed to fetch references:', error);
       if (refs.referencesList) {
-        el(refs.referencesList).empty().child(
-          el('div').css({ color: '#dc2626', padding: '1rem' }).text('Failed to connect to backend. Make sure server.js is running on port 3000.')
+        el(refs.referencesList).clear().child(
+          el('div').css({ color: '#dc2626', padding: '1rem' }).text('Failed to connect to backend. Pastikan server.js berjalan.')
         ).get();
       }
     }
@@ -291,7 +409,9 @@ export function createComicGeneratorPage() {
         body: JSON.stringify({
           prompt,
           reference_ids: selectedReferences,
-          character_properties: characterProperties
+          character_properties: characterProperties,
+          prompt_model: state.promptModel,
+          comic_options: getComicOptions()
         })
       });
 
@@ -302,7 +422,8 @@ export function createComicGeneratorPage() {
         if (refs.promptInput) {
           refs.promptInput.value = data.data.prompt;
         }
-        layout.toast('Prompt adegan diperhalus', { type: 'success' });
+        const modelMsg = data.data.model_used ? ` (${data.data.model_used})` : '';
+        layout.toast('Prompt adegan diperhalus' + modelMsg, { type: 'success' });
       } else {
         layout.toast('Gagal memperhalus prompt: ' + (data.error || 'Unknown error'), { type: 'error' });
       }
@@ -351,7 +472,9 @@ export function createComicGeneratorPage() {
         body: JSON.stringify({
           prompt: state.prompt,
           reference_ids: selectedReferences,
-          character_properties: characterProperties
+          character_properties: characterProperties,
+          image_model: state.imageModel,
+          comic_options: getComicOptions()
         })
       });
 
@@ -390,7 +513,7 @@ export function createComicGeneratorPage() {
     const refsToShow = state.filteredReferences;
 
     if (refsToShow.length === 0) {
-      el(refs.referencesList).empty().child(
+      el(refs.referencesList).clear().child(
         el('div').css({
           color: '#64748b',
           padding: '1.5rem',
@@ -498,7 +621,7 @@ export function createComicGeneratorPage() {
       ]);
     });
 
-    el(refs.referencesList).empty().child(items).get();
+    el(refs.referencesList).clear().child(items).get();
   }
 
   function toggleReference(id) {
@@ -855,7 +978,7 @@ export function createComicGeneratorPage() {
       }).child([
         el('div').child([
           el('div').text('Comic Generator').css({ fontSize: '1.05rem', fontWeight: '700', color: '#e2e8f0' }),
-          el('div').text('Nano Banana · gemini-2.5-flash-image').css({ fontSize: '0.78rem', color: '#94a3b8', marginTop: '0.15rem' })
+          el('div').link(refs, 'headerModelLabel').text('Model gambar: …').css({ fontSize: '0.78rem', color: '#94a3b8', marginTop: '0.15rem' })
         ]),
         el('button').css({
           padding: '0.5rem 1rem',
@@ -892,6 +1015,48 @@ export function createComicGeneratorPage() {
           overflowY: 'auto'
         }).child([
           el('div').text('Buat Komik').css({ fontSize: '0.9rem', fontWeight: '700', color: '#e2e8f0' }),
+          el('div').css({
+            padding: '0.75rem',
+            background: '#0f172a',
+            borderRadius: '0.5rem',
+            border: '1px solid #334155'
+          }).child([
+            el('div').text('Pengaturan Model AI').css({
+              fontSize: '0.75rem',
+              fontWeight: '700',
+              color: '#94a3b8',
+              marginBottom: '0.6rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em'
+            }),
+            el('div').css({ marginBottom: '0.55rem' }).child([
+              el('label').text('Perhalus prompt').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
+              el('select')
+                .link(refs, 'promptModelSelect')
+                .css({ ...inputStyle, fontSize: '0.8rem' })
+                .child(buildModelSelectOptions(MODEL_CATALOG_FALLBACK.prompt, state.promptModel))
+                .change(function() {
+                  state.promptModel = this.value;
+                  updateModelHints();
+                }),
+              el('div').link(refs, 'promptModelHint').css({ fontSize: '0.68rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.35' })
+            ]),
+            el('div').child([
+              el('label').text('Generate gambar').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
+              el('select')
+                .link(refs, 'imageModelSelect')
+                .css({ ...inputStyle, fontSize: '0.8rem' })
+                .child(buildModelSelectOptions(MODEL_CATALOG_FALLBACK.image, state.imageModel))
+                .change(function() {
+                  state.imageModel = this.value;
+                  updateModelHints();
+                  if (refs.headerModelLabel) {
+                    refs.headerModelLabel.textContent = 'Model gambar: ' + getModelLabel(state.imageModel, 'image');
+                  }
+                }),
+              el('div').link(refs, 'imageModelHint').css({ fontSize: '0.68rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.35' })
+            ])
+          ]),
           el('div').link(refs, 'selectionSummary').text('Belum ada referensi dipilih').css({
             fontSize: '0.8rem',
             color: '#f59e0b',
@@ -912,6 +1077,57 @@ export function createComicGeneratorPage() {
               borderRadius: '0.5rem',
               border: '1px dashed #334155'
             })
+          ]),
+          el('div').css({
+            padding: '0.75rem',
+            background: '#0f172a',
+            borderRadius: '0.5rem',
+            border: '1px solid #334155'
+          }).child([
+            el('div').text('Panel Komik').css({
+              fontSize: '0.75rem',
+              fontWeight: '700',
+              color: '#94a3b8',
+              marginBottom: '0.6rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em'
+            }),
+            el('div').css({ marginBottom: '0.5rem' }).child([
+              el('label').text('Gaya visual').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
+              el('select').link(refs, 'comicStyleSelect').css({ ...inputStyle, fontSize: '0.8rem' }).child([
+                el('option').text('Manga (Jepang)').attr('value', 'manga'),
+                el('option').text('Comic Book (Amerika)').attr('value', 'comic'),
+                el('option').text('Manhwa (Korea)').attr('value', 'manhwa'),
+                el('option').text('Webtoon').attr('value', 'webtoon')
+              ]).change(function() {
+                state.comicStyle = this.value;
+              })
+            ]),
+            el('div').css({ marginBottom: '0.5rem' }).child([
+              el('label').text('Sudut pandang').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
+              el('select').link(refs, 'cameraAngleSelect').css({ ...inputStyle, fontSize: '0.8rem' }).child([
+                el('option').text('Otomatis (sesuai adegan)').attr('value', 'auto'),
+                el('option').text('Close-up (wajah)').attr('value', 'close_up'),
+                el('option').text('Medium shot (torso)').attr('value', 'medium'),
+                el('option').text('Wide shot (seluruh tubuh)').attr('value', 'wide'),
+                el('option').text('Bird\'s eye (dari atas)').attr('value', 'birds_eye'),
+                el('option').text('Worm\'s eye (dari bawah)').attr('value', 'worms_eye'),
+                el('option').text('Over-the-shoulder').attr('value', 'over_shoulder'),
+                el('option').text('Dutch angle (miring)').attr('value', 'dutch'),
+                el('option').text('Profil / samping').attr('value', 'profile')
+              ]).change(function() {
+                state.cameraAngle = this.value;
+              })
+            ]),
+            el('div').child([
+              el('label').text('Narator (caption box)').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
+              el('input').link(refs, 'narratorInput').attr('type', 'text').attr('placeholder', 'Opsional: "Hari itu, Dina tidak menyangka..."').css({
+                ...inputStyle,
+                fontSize: '0.8rem'
+              }).on('input', function(e) {
+                state.narrator = e.target.value;
+              })
+            ])
           ]),
           el('div').child([
             el('div').css({
@@ -943,7 +1159,7 @@ export function createComicGeneratorPage() {
                 ])
                 .click(enhanceScenePrompt)
             ]),
-            el('div').text('Tulis ide singkat, lalu klik AI untuk detail adegan.').css({
+            el('div').text('Tulis ide singkat. AI akan memperhalus ke gaya komik/manga sesuai pengaturan panel di atas.').css({
               fontSize: '0.7rem',
               color: '#64748b',
               marginBottom: '0.4rem',
@@ -1004,6 +1220,11 @@ export function createComicGeneratorPage() {
     ])
   ]);
 
+  if (refs.comicStyleSelect) refs.comicStyleSelect.value = state.comicStyle;
+  if (refs.cameraAngleSelect) refs.cameraAngleSelect.value = state.cameraAngle;
+
+  renderModelSelects();
+  fetchModelConfig();
   fetchReferences();
   fetchGenerations();
   renderSelectedChips();

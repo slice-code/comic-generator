@@ -37,6 +37,138 @@ if (!GEMINI_API_KEY) {
   console.warn('WARNING: GEMINI_API_KEY not found in .env.local');
 }
 
+/** Katalog model — tier: free | limited | paid */
+const GEMINI_MODEL_CATALOG = {
+  prompt: [
+    {
+      id: 'gemini-2.5-flash',
+      label: 'Gemini 2.5 Flash',
+      tier: 'free',
+      note: 'Default — rekomendasi perhalus prompt. Cepat, kuota gratis harian.'
+    },
+    {
+      id: 'gemini-2.5-flash-lite',
+      label: 'Gemini 2.5 Flash Lite',
+      tier: 'free',
+      note: 'Versi lebih ringan 2.5, hemat kuota, cocok prompt singkat.'
+    },
+    {
+      id: 'gemini-2.5-pro',
+      label: 'Gemini 2.5 Pro',
+      tier: 'limited',
+      note: 'Kualitas tertinggi 2.5, gratis terbatas; lebih lambat.'
+    },
+    {
+      id: 'gemini-2.0-flash',
+      label: 'Gemini 2.0 Flash',
+      tier: 'free',
+      note: 'Generasi 2.0, cepat, kuota gratis.'
+    },
+    {
+      id: 'gemini-2.0-flash-lite',
+      label: 'Gemini 2.0 Flash Lite',
+      tier: 'free',
+      note: 'Paling ringan, kuota gratis besar.'
+    },
+    {
+      id: 'gemini-1.5-flash',
+      label: 'Gemini 1.5 Flash',
+      tier: 'free',
+      note: 'Legacy stabil, masih gratis terbatas.'
+    },
+    {
+      id: 'gemini-1.5-pro',
+      label: 'Gemini 1.5 Pro',
+      tier: 'limited',
+      note: 'Legacy pro, gratis terbatas; untuk prompt kompleks.'
+    }
+  ],
+  image: [
+    {
+      id: 'gemini-2.5-flash-image',
+      label: 'Nano Banana (2.5 Flash Image)',
+      tier: 'free',
+      note: 'Default — generate gambar komik. Gratis terbatas per hari.'
+    },
+    {
+      id: 'gemini-2.0-flash-preview-image-generation',
+      label: 'Gemini 2.0 Flash Image (Preview)',
+      tier: 'limited',
+      note: 'Alternatif generate gambar, gratis terbatas; hasil bisa berbeda.'
+    }
+  ]
+};
+
+const DEFAULT_PROMPT_MODEL = process.env.GEMINI_PROMPT_MODEL || 'gemini-2.5-flash';
+const DEFAULT_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
+
+const PROMPT_MODEL_FALLBACKS = [...new Set([
+  DEFAULT_PROMPT_MODEL,
+  ...GEMINI_MODEL_CATALOG.prompt.map(m => m.id)
+])];
+
+function resolvePromptModel(requested) {
+  const ids = GEMINI_MODEL_CATALOG.prompt.map(m => m.id);
+  if (requested && ids.includes(requested)) return requested;
+  return DEFAULT_PROMPT_MODEL;
+}
+
+function resolveImageModel(requested) {
+  const ids = GEMINI_MODEL_CATALOG.image.map(m => m.id);
+  if (requested && ids.includes(requested)) return requested;
+  return DEFAULT_IMAGE_MODEL;
+}
+
+function isModelUnavailableError(message) {
+  const m = String(message || '').toLowerCase();
+  return m.includes('not found') || m.includes('no longer available') || m.includes('not supported');
+}
+
+const COMIC_STYLE_PROMPTS = {
+  manga: 'Japanese manga style: clean ink lines, cel shading, screentone hints, expressive anime eyes, single manga panel composition',
+  comic: 'American comic book style: bold outlines, dynamic shading, vibrant colors, halftone dots optional',
+  manhwa: 'Korean manhwa style: soft gradients, detailed eyes, polished digital coloring, manhwa panel',
+  webtoon: 'Webtoon style: full-color digital art, soft lighting, vertical panel friendly composition'
+};
+
+const CAMERA_ANGLE_PROMPTS = {
+  auto: '',
+  close_up: 'camera angle: extreme close-up on face, emotional detail',
+  medium: 'camera angle: medium shot, waist-up framing',
+  wide: 'camera angle: wide shot showing full body and environment',
+  birds_eye: 'camera angle: bird\'s eye view from above',
+  worms_eye: 'camera angle: worm\'s eye view from below, dramatic scale',
+  over_shoulder: 'camera angle: over-the-shoulder shot',
+  dutch: 'camera angle: dutch angle, tilted dramatic perspective',
+  profile: 'camera angle: side profile shot'
+};
+
+/**
+ * Build comic/manga-specific instructions appended to image prompts.
+ */
+function buildComicSceneContext(comicOptions = {}) {
+  const style = comicOptions.comic_style || 'manga';
+  const angle = comicOptions.camera_angle || 'medium';
+  const narrator = String(comicOptions.narrator || '').trim();
+
+  const lines = [
+    'IMPORTANT: Generate ONE comic/manga panel illustration. NOT a photorealistic photograph. NOT 3D render.',
+    COMIC_STYLE_PROMPTS[style] || COMIC_STYLE_PROMPTS.manga
+  ];
+
+  if (CAMERA_ANGLE_PROMPTS[angle]) {
+    lines.push(CAMERA_ANGLE_PROMPTS[angle]);
+  }
+
+  lines.push('Include clear panel borders or comic framing. Speech bubbles or caption boxes if dialogue/narration exists.');
+
+  if (narrator) {
+    lines.push(`Narration caption box text (in Indonesian): "${narrator}". Show as manga/comic narration box (not plain subtitle).`);
+  }
+
+  return lines.join('\n');
+}
+
 const mimeTypes = {
   '.html': 'text/html',
   '.js': 'application/javascript',
@@ -110,6 +242,23 @@ const server = http.createServer(async (req, res) => {
   console.log(`${req.method} ${req.url}`);
 
   try {
+    // GET /api/config - Model catalog & defaults
+    if (req.method === 'GET' && req.url === '/api/config') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        data: {
+          models: GEMINI_MODEL_CATALOG,
+          defaults: {
+            prompt: DEFAULT_PROMPT_MODEL,
+            image: DEFAULT_IMAGE_MODEL
+          },
+          hasApiKey: Boolean(GEMINI_API_KEY)
+        }
+      }));
+      return;
+    }
+
     // GET /api/references - List all references
     if (req.method === 'GET' && req.url === '/api/references') {
       db.all('SELECT id, name, type, image_base64, created_at FROM comic_references ORDER BY created_at DESC', [], (err, rows) => {
@@ -205,7 +354,7 @@ const server = http.createServer(async (req, res) => {
     // POST /api/generate - Generate comic image
     if (req.method === 'POST' && req.url === '/api/generate') {
       const body = await parseBody(req);
-      const { prompt, reference_ids } = body;
+      const { prompt, reference_ids, image_model, comic_options } = body;
 
       if (!prompt) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -239,7 +388,12 @@ const server = http.createServer(async (req, res) => {
 
           try {
             // Call Gemini Nano Banana API
-            const geminiResult = await callGeminiAPI(prompt, references);
+            const geminiResult = await callGeminiAPI(
+              prompt,
+              references,
+              resolveImageModel(image_model),
+              comic_options || {}
+            );
             
             // Save generation to database
             const refIdsJson = JSON.stringify(reference_ids);
@@ -275,7 +429,7 @@ const server = http.createServer(async (req, res) => {
     // POST /api/enhance-prompt - Expand scene prompt with Gemini text model
     if (req.method === 'POST' && req.url === '/api/enhance-prompt') {
       const body = await parseBody(req);
-      const { prompt, reference_ids, character_properties } = body;
+      const { prompt, reference_ids, character_properties, prompt_model, comic_options } = body;
 
       if (!prompt || !String(prompt).trim()) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -287,13 +441,21 @@ const server = http.createServer(async (req, res) => {
 
       const finishEnhance = async (references) => {
         try {
-          const enhanced = await enhanceScenePrompt(
+          const result = await enhanceScenePrompt(
             String(prompt).trim(),
             references,
-            character_properties || {}
+            character_properties || {},
+            resolvePromptModel(prompt_model),
+            comic_options || {}
           );
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: true, data: { prompt: enhanced } }));
+          res.end(JSON.stringify({
+            success: true,
+            data: {
+              prompt: result.text,
+              model_used: result.modelUsed
+            }
+          }));
         } catch (err) {
           console.error('Enhance prompt error:', err);
           res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -419,8 +581,9 @@ function callGeminiGenerateContent(model, payload) {
       res.on('end', () => {
         try {
           const response = JSON.parse(data);
-          if (response.error) {
-            reject(new Error(`Gemini API error: ${response.error.message}`));
+          if (res.statusCode >= 400 || response.error) {
+            const msg = response.error?.message || `HTTP ${res.statusCode}`;
+            reject(new Error(`Gemini API error: ${msg}`));
             return;
           }
           resolve(response);
@@ -442,7 +605,7 @@ function callGeminiGenerateContent(model, payload) {
 /**
  * Expand a brief scene idea into a detailed comic panel prompt (text model).
  */
-async function enhanceScenePrompt(briefPrompt, references, characterProperties) {
+async function enhanceScenePrompt(briefPrompt, references, characterProperties, preferredModel, comicOptions = {}) {
   const refLines = references.length
     ? references.map(r => `- ${r.name} (${r.type})`).join('\n')
     : '(tidak ada referensi dipilih)';
@@ -461,14 +624,36 @@ async function enhanceScenePrompt(briefPrompt, references, characterProperties) 
     .filter(Boolean)
     .join('\n');
 
-  const instruction = `Kamu adalah penulis prompt adegan komik untuk AI image generator.
-Perluas ide adegan singkat pengguna menjadi prompt detail yang kaya visual.
-Sertakan: latar, pencahayaan, aksi karakter, ekspresi, komposisi panel, suasana, dan gaya art komik/manga.
-Gunakan nama referensi yang disebutkan. Tulis dalam Bahasa Indonesia.
-Maksimal 120 kata. Output HANYA teks prompt final, tanpa judul atau penjelasan tambahan.`;
+  const style = comicOptions.comic_style || 'manga';
+  const angle = comicOptions.camera_angle || 'medium';
+  const narrator = String(comicOptions.narrator || '').trim();
+  const styleLabel = { manga: 'manga Jepang', comic: 'comic book Amerika', manhwa: 'manhwa Korea', webtoon: 'webtoon' }[style] || 'manga';
+  const angleLabel = {
+    auto: 'sesuai adegan',
+    close_up: 'close-up',
+    medium: 'medium shot',
+    wide: 'wide shot',
+    birds_eye: 'bird\'s eye',
+    worms_eye: 'worm\'s eye',
+    over_shoulder: 'over-the-shoulder',
+    dutch: 'dutch angle',
+    profile: 'profil/samping'
+  }[angle] || 'medium shot';
+
+  const instruction = `Kamu adalah penulis prompt untuk AI yang menggambar PANEL KOMIK/MANGA (bukan foto realistis).
+Perluas ide adegan singkat menjadi prompt detail untuk satu panel komik.
+WAJIB sertakan: gaya ilustrasi ${styleLabel}, sudut pandang ${angleLabel}, line art komik, cel shading/warna flat komik, komposisi panel, latar, pencahayaan dramatis komik, aksi & ekspresi karakter.
+Jangan deskripsikan sebagai fotografi atau render 3D. Gunakan nama referensi.
+${narrator ? 'Sertakan kotak narasi/caption komik untuk teks narator yang diberikan.' : ''}
+Tulis prompt final dalam Bahasa Indonesia (istilah visual boleh Inggris). Maksimal 140 kata.
+Output HANYA teks prompt siap pakai untuk generate gambar, tanpa judul atau penjelasan.`;
 
   const userBlock = `Ide adegan singkat:
 ${briefPrompt}
+
+Gaya komik: ${styleLabel}
+Sudut pandang: ${angleLabel}
+${narrator ? `Teks narator (caption box): ${narrator}` : 'Narator: (tidak ada)'}
 
 Referensi yang dipakai:
 ${refLines}
@@ -476,7 +661,6 @@ ${propLines ? `\nProperti karakter:\n${propLines}` : ''}`;
 
   const payload = {
     contents: [{
-      role: 'user',
       parts: [{ text: `${instruction}\n\n${userBlock}` }]
     }],
     generationConfig: {
@@ -485,12 +669,27 @@ ${propLines ? `\nProperti karakter:\n${propLines}` : ''}`;
     }
   };
 
-  console.log('Enhancing scene prompt with gemini-2.0-flash');
-  const response = await callGeminiGenerateContent('gemini-2.0-flash', payload);
-  let text = extractGeminiText(response);
-  text = text.replace(/^```[\w]*\n?|```$/g, '').trim();
-  text = text.replace(/^["']|["']$/g, '').trim();
-  return text;
+  const tryOrder = [...new Set([preferredModel, ...PROMPT_MODEL_FALLBACKS])];
+  let lastError = null;
+
+  for (const modelId of tryOrder) {
+    try {
+      console.log('Enhancing scene prompt with', modelId);
+      const response = await callGeminiGenerateContent(modelId, payload);
+      let text = extractGeminiText(response);
+      text = text.replace(/^```[\w]*\n?|```$/g, '').trim();
+      text = text.replace(/^["']|["']$/g, '').trim();
+      return { text, modelUsed: modelId };
+    } catch (err) {
+      lastError = err;
+      console.warn('Enhance failed on', modelId, err.message);
+      if (!isModelUnavailableError(err.message)) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError || new Error('Semua model prompt gagal. Cek GEMINI_API_KEY dan pilihan model.');
 }
 
 /**
@@ -499,7 +698,7 @@ ${propLines ? `\nProperti karakter:\n${propLines}` : ''}`;
  * @param {Array} references - Array of { name, type, image_base64 }
  * @returns {Promise<{image_base64: string}>}
  */
-async function callGeminiAPI(prompt, references) {
+async function callGeminiAPI(prompt, references, imageModel, comicOptions = {}) {
   if (!GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY not configured');
   }
@@ -529,9 +728,9 @@ async function callGeminiAPI(prompt, references) {
     });
   }
 
-  // Add the main prompt for image generation
+  const comicContext = buildComicSceneContext(comicOptions);
   parts.push({
-    text: prompt
+    text: `${comicContext}\n\nScene to illustrate:\n${prompt}`
   });
 
   const payload = {
@@ -540,8 +739,9 @@ async function callGeminiAPI(prompt, references) {
     }]
   };
 
-  console.log('Using model: gemini-2.5-flash-image (Nano Banana)');
-  const response = await callGeminiGenerateContent('gemini-2.5-flash-image', payload);
+  const modelId = imageModel || DEFAULT_IMAGE_MODEL;
+  console.log('Using image model:', modelId);
+  const response = await callGeminiGenerateContent(modelId, payload);
   const candidates = response.candidates || [];
   if (candidates.length === 0) {
     throw new Error('No response from Gemini');
