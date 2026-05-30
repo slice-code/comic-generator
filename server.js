@@ -86,15 +86,33 @@ const GEMINI_MODEL_CATALOG = {
   image: [
     {
       id: 'gemini-2.5-flash-image',
-      label: 'Nano Banana (2.5 Flash Image)',
+      label: 'Nano Banana',
       tier: 'free',
-      note: 'Default — generate gambar komik. Gratis terbatas per hari.'
+      note: 'Gemini 2.5 Flash Image — default, cepat, kuota gratis harian.'
+    },
+    {
+      id: 'gemini-3.1-flash-image',
+      label: 'Nano Banana 2',
+      tier: 'limited',
+      note: 'Gemini 3.1 Flash Image — kualitas lebih tinggi, gratis terbatas / kuota API.'
+    },
+    {
+      id: 'gemini-3.1-flash-image-preview',
+      label: 'Nano Banana 2 (Preview)',
+      tier: 'limited',
+      note: 'Versi preview Nano Banana 2 jika model stabil belum tersedia di API key.'
+    },
+    {
+      id: 'gemini-3-pro-image-preview',
+      label: 'Nano Banana Pro',
+      tier: 'paid',
+      note: 'Gemini 3 Pro Image — kualitas studio, editing presisi; berbayar per generate.'
     },
     {
       id: 'gemini-2.0-flash-preview-image-generation',
-      label: 'Gemini 2.0 Flash Image (Preview)',
+      label: 'Nano Banana (2.0 Preview)',
       tier: 'limited',
-      note: 'Alternatif generate gambar, gratis terbatas; hasil bisa berbeda.'
+      note: 'Legacy 2.0 image preview — gratis terbatas, fallback jika model lain penuh.'
     }
   ]
 };
@@ -113,10 +131,24 @@ function resolvePromptModel(requested) {
   return DEFAULT_PROMPT_MODEL;
 }
 
+const IMAGE_MODEL_FALLBACKS = [...new Set([
+  DEFAULT_IMAGE_MODEL,
+  'gemini-3.1-flash-image',
+  'gemini-3.1-flash-image-preview',
+  'gemini-3-pro-image-preview',
+  'gemini-2.0-flash-preview-image-generation',
+  ...GEMINI_MODEL_CATALOG.image.map(m => m.id)
+])];
+
 function resolveImageModel(requested) {
   const ids = GEMINI_MODEL_CATALOG.image.map(m => m.id);
   if (requested && ids.includes(requested)) return requested;
   return DEFAULT_IMAGE_MODEL;
+}
+
+function getImageModelTryOrder(requested) {
+  const primary = resolveImageModel(requested);
+  return [...new Set([primary, ...IMAGE_MODEL_FALLBACKS])];
 }
 
 function isModelUnavailableError(message) {
@@ -418,6 +450,7 @@ const server = http.createServer(async (req, res) => {
                 image_base64: geminiResult.image_base64,
                 prompt: finalPrompt,
                 prompt_completed: completedPrompt.completed,
+                image_model_used: geminiResult.model_used,
                 references_used: references.map(r => ({ name: r.name, type: r.type }))
               } 
             }));
@@ -976,28 +1009,12 @@ async function enhanceScenePrompt(briefPrompt, references, characterProperties, 
  * @param {Array} references - Array of { name, type, image_base64 }
  * @returns {Promise<{image_base64: string}>}
  */
-async function callGeminiAPI(prompt, references, imageModel, comicOptions = {}) {
-  if (!GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY not configured');
-  }
-
-  console.log('Calling Gemini Flash Image API (Nano Banana) with:', {
-    prompt,
-    reference_count: references.length
-  });
-
-  // Build request payload for Gemini Flash Image
+function buildImageGenerationPayload(prompt, references, comicOptions = {}) {
   const parts = [];
 
-  // Add reference images first (for character/object consistency)
   for (const ref of references) {
-    // Remove data:image/xxx;base64, prefix if present
     const base64Data = ref.image_base64.replace(/^data:image\/[a-z]+;base64,/, '');
-    
-    parts.push({
-      text: `Reference image - ${ref.name} (${ref.type}):`
-    });
-    
+    parts.push({ text: `Reference image - ${ref.name} (${ref.type}):` });
     parts.push({
       inline_data: {
         mime_type: 'image/png',
@@ -1011,15 +1028,10 @@ async function callGeminiAPI(prompt, references, imageModel, comicOptions = {}) 
     text: `${comicContext}\n\nScene to illustrate:\n${prompt}`
   });
 
-  const payload = {
-    contents: [{
-      parts: parts
-    }]
-  };
+  return { contents: [{ parts }] };
+}
 
-  const modelId = imageModel || DEFAULT_IMAGE_MODEL;
-  console.log('Using image model:', modelId);
-  const response = await callGeminiGenerateContent(modelId, payload);
+function parseImageFromGeminiResponse(response, modelId) {
   const candidates = response.candidates || [];
   if (candidates.length === 0) {
     throw new Error('No response from Gemini');
@@ -1028,15 +1040,47 @@ async function callGeminiAPI(prompt, references, imageModel, comicOptions = {}) 
   const imagePart = contentParts.find(p => p.inlineData || p.inline_data);
   if (imagePart) {
     const imageData = imagePart.inlineData || imagePart.inline_data;
-    const mimeType = imageData.mimeType || 'image/png';
+    const mimeType = imageData.mimeType || imageData.mime_type || 'image/png';
     const base64Image = `data:${mimeType};base64,${imageData.data}`;
-    return { image_base64: base64Image };
+    return { image_base64: base64Image, model_used: modelId };
   }
   const textPart = contentParts.find(p => p.text);
   if (textPart) {
-    throw new Error('Model returned text instead of image. Periksa ketersediaan gemini-2.5-flash-image pada API key Anda.');
+    throw new Error(`Model ${modelId} mengembalikan teks, bukan gambar. Coba model Nano Banana lain.`);
   }
   throw new Error('No image response from Gemini');
+}
+
+async function callGeminiAPI(prompt, references, imageModel, comicOptions = {}) {
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY not configured');
+  }
+
+  console.log('Calling Gemini image API (Nano Banana) with:', {
+    prompt: prompt.slice(0, 120) + (prompt.length > 120 ? '…' : ''),
+    reference_count: references.length,
+    requested_model: imageModel
+  });
+
+  const payload = buildImageGenerationPayload(prompt, references, comicOptions);
+  const tryOrder = getImageModelTryOrder(imageModel);
+  let lastError = null;
+
+  for (const modelId of tryOrder) {
+    try {
+      console.log('Using image model:', modelId);
+      const response = await callGeminiGenerateContent(modelId, payload);
+      return parseImageFromGeminiResponse(response, modelId);
+    } catch (err) {
+      lastError = err;
+      console.warn('Image model failed:', modelId, err.message);
+      if (!isModelUnavailableError(err.message)) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError || new Error('Semua model gambar gagal. Periksa API key dan kuota.');
 }
 
 server.listen(PORT, () => {

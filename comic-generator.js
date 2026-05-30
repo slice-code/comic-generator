@@ -15,8 +15,11 @@ const MODEL_CATALOG_FALLBACK = {
     { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro', tier: 'limited', note: 'Legacy pro, gratis terbatas.' }
   ],
   image: [
-    { id: 'gemini-2.5-flash-image', label: 'Nano Banana (2.5 Flash Image)', tier: 'free', note: 'Default — generate gambar komik.' },
-    { id: 'gemini-2.0-flash-preview-image-generation', label: 'Gemini 2.0 Flash Image (Preview)', tier: 'limited', note: 'Alternatif generate gambar, gratis terbatas.' }
+    { id: 'gemini-2.5-flash-image', label: 'Nano Banana', tier: 'free', note: 'Default — cepat, kuota gratis harian.' },
+    { id: 'gemini-3.1-flash-image', label: 'Nano Banana 2', tier: 'limited', note: 'Kualitas lebih tinggi, gratis terbatas / kuota API.' },
+    { id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2 (Preview)', tier: 'limited', note: 'Preview Nano Banana 2 jika model stabil belum ada.' },
+    { id: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro', tier: 'paid', note: 'Kualitas studio; berbayar per generate.' },
+    { id: 'gemini-2.0-flash-preview-image-generation', label: 'Nano Banana (2.0 Preview)', tier: 'limited', note: 'Legacy preview, gratis terbatas.' }
   ]
 };
 
@@ -507,7 +510,13 @@ export function createComicGeneratorPage() {
         }
 
         el(refs.generatedImageContainer).prepend(newImage).get();
-        layout.toast('Comic generated successfully!', { type: 'success' });
+        const imgModel = data.data.image_model_used
+          ? getModelLabel(data.data.image_model_used, 'image')
+          : '';
+        layout.toast(
+          'Komik berhasil dibuat' + (imgModel ? ` · ${imgModel}` : ''),
+          { type: 'success' }
+        );
       } else {
         layout.toast('Generation failed: ' + data.error, { type: 'error' });
       }
