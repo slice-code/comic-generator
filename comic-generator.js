@@ -195,15 +195,13 @@ export function createComicGeneratorPage() {
       })
       .child([
         el('div').css({ padding: '0.75rem', background: '#0f172a', borderBottom: '1px solid #334155' }).child([
-          el('div').text(prompt).css({
+          el('div').text(prompt).attr('title', prompt).css({
             fontSize: '0.85rem',
             color: '#e2e8f0',
             marginBottom: '0.25rem',
-            lineHeight: '1.4',
-            display: '-webkit-box',
-            WebkitLineClamp: '2',
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden'
+            lineHeight: '1.45',
+            wordBreak: 'break-word',
+            whiteSpace: 'pre-wrap'
           }),
           el('div').text(createdAt).css({ fontSize: '0.7rem', color: '#64748b' })
         ]),
@@ -1008,7 +1006,7 @@ export function createComicGeneratorPage() {
         minHeight: '0'
       }).child([
         el('div').css({
-          width: 'min(380px, 38vw)',
+          width: 'min(440px, 42vw)',
           flexShrink: '0',
           padding: '1.25rem',
           background: '#1e293b',
@@ -1037,19 +1035,19 @@ export function createComicGeneratorPage() {
               el('label').text('Perhalus prompt').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
               el('select')
                 .link(refs, 'promptModelSelect')
-                .css({ ...inputStyle, fontSize: '0.8rem' })
+                .css({ ...inputStyle, fontSize: '0.8rem', width: '100%', maxWidth: '100%' })
                 .child(buildModelSelectOptions(MODEL_CATALOG_FALLBACK.prompt, state.promptModel))
                 .change(function() {
                   state.promptModel = this.value;
                   updateModelHints();
                 }),
-              el('div').link(refs, 'promptModelHint').css({ fontSize: '0.68rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.35' })
+              el('div').link(refs, 'promptModelHint').css({ fontSize: '0.68rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.35', wordBreak: 'break-word', whiteSpace: 'normal' })
             ]),
             el('div').child([
               el('label').text('Generate gambar').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
               el('select')
                 .link(refs, 'imageModelSelect')
-                .css({ ...inputStyle, fontSize: '0.8rem' })
+                .css({ ...inputStyle, fontSize: '0.8rem', width: '100%', maxWidth: '100%' })
                 .child(buildModelSelectOptions(MODEL_CATALOG_FALLBACK.image, state.imageModel))
                 .change(function() {
                   state.imageModel = this.value;
@@ -1058,7 +1056,7 @@ export function createComicGeneratorPage() {
                     refs.headerModelLabel.textContent = 'Model gambar: ' + getModelLabel(state.imageModel, 'image');
                   }
                 }),
-              el('div').link(refs, 'imageModelHint').css({ fontSize: '0.68rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.35' })
+              el('div').link(refs, 'imageModelHint').css({ fontSize: '0.68rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.35', wordBreak: 'break-word', whiteSpace: 'normal' })
             ])
           ]),
           el('div').link(refs, 'selectionSummary').text('Belum ada referensi dipilih').css({
@@ -1128,7 +1126,7 @@ export function createComicGeneratorPage() {
               el('select').link(refs, 'speechModeSelect').css({ ...inputStyle, fontSize: '0.8rem' }).child([
                 el('option').text('Otomatis (deteksi dari adegan)').attr('value', 'auto'),
                 el('option').text('Dialog (speech bubble)').attr('value', 'dialogue'),
-                el('option').text('Monolog / bicara pada diri sendiri (thought bubble)').attr('value', 'monologue'),
+                el('option').text('Monolog (thought bubble)').attr('value', 'monologue'),
                 el('option').text('Dialog + monolog').attr('value', 'both'),
                 el('option').text('Tanpa teks di panel').attr('value', 'none')
               ]).change(function() {
@@ -1190,9 +1188,9 @@ export function createComicGeneratorPage() {
               marginBottom: '0.4rem',
               lineHeight: '1.4'
             }),
-            el('textarea').link(refs, 'promptInput').attr('placeholder', 'Contoh: Luna terpojok, berkata "Aku tidak bisa kabur!" sambil berbicara dengan diri sendiri "Tenang... napas dulu."').css({
+            el('textarea').link(refs, 'promptInput').attr('rows', '8').attr('placeholder', 'Contoh: Luna terpojok, berkata "Aku tidak bisa kabur!" sambil berbicara dengan diri sendiri "Tenang... napas dulu."').css({
               width: '100%',
-              minHeight: '140px',
+              minHeight: '180px',
               background: '#0f172a',
               border: '1px solid #334155',
               borderRadius: '0.5rem',
@@ -1526,15 +1524,12 @@ export function createSavedDataPage() {
                         }).click(() => viewGeneration(gen))
                       ),
                       el('td').css({ padding: '0.75rem 1.25rem', maxWidth: '400px' }).child([
-                        el('div').text(gen.prompt).css({
+                        el('div').text(gen.prompt).attr('title', gen.prompt).css({
                           color: '#e2e8f0',
                           fontSize: '0.85rem',
                           lineHeight: '1.5',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          display: '-webkit-box',
-                          WebkitLineClamp: '2',
-                          WebkitBoxOrient: 'vertical'
+                          wordBreak: 'break-word',
+                          whiteSpace: 'pre-wrap'
                         })
                       ]),
                       el('td').css({ padding: '0.75rem 1.25rem' }).child(

@@ -542,6 +542,13 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+const ENHANCE_MAX_OUTPUT_TOKENS = 2048;
+const ENHANCE_CONTINUATION_MAX_TOKENS = 1024;
+
+function getGeminiFinishReason(response) {
+  return String(response.candidates?.[0]?.finishReason || '').toUpperCase();
+}
+
 function extractGeminiText(response) {
   const candidates = response.candidates || [];
   if (candidates.length === 0) {
@@ -553,6 +560,28 @@ function extractGeminiText(response) {
     throw new Error('No text response from Gemini');
   }
   return textPart.text.trim();
+}
+
+/** Respons enhance terpotong di tengah kalimat / token habis */
+function isTruncatedEnhanceText(text, finishReason) {
+  const t = String(text || '').trim();
+  if (!t) return true;
+  if (finishReason === 'MAX_TOKENS') return true;
+  if (t.length < 40) return false;
+  if (/[.!?…"»]$/.test(t)) return false;
+  if (/\b(speech bubble|thought bubble|kotak narasi|gelembung)/i.test(t) && !/[.!?]$/.test(t)) return true;
+  const tail = t.slice(-80);
+  if (/(bubble|narasi|dialog|monolog|berkata|caption)\s*[:「"']?\s*[^.!?]{0,120}$/i.test(tail)) return true;
+  if (/,\s*$/.test(t) || /\s(dan|dengan|sambil|yang|di|ke|pada)\s*$/i.test(t)) return true;
+  return false;
+}
+
+function getEnhanceWordRange(speech) {
+  const hasTextInPanel = speech.hasDialogue || speech.hasMonologue || speech.narrator || speech.dialogueLines.length > 0;
+  if (hasTextInPanel) {
+    return '120–280 kata. Semua teks dialog, thought bubble, dan caption WAJIB utuh (jangan dipotong di tengah).';
+  }
+  return '100–200 kata.';
 }
 
 function callGeminiGenerateContent(model, payload) {
@@ -761,13 +790,13 @@ LARANGAN: jangan hanya menulis "manga, gaya komik, medium shot" atau daftar peng
 Contoh BENAR: "Panel manga, medium shot: Luna terpojok di lorong gua, speech bubble \"Aku tidak bisa kabur!\", thought bubble kecil \"Tenang... napas dulu.\", kotak narasi di atas: Malam itu gua terasa lebih sempit."
 Sisipkan secara natural: gaya ${styleLabel}${anglePhrase ? ', ' + anglePhrase : ''}, bukan foto.
 ${speechRules}
-Output HANYA paragraf prompt adegan, tanpa judul.`
+${getEnhanceWordRange(speech)} Output HANYA paragraf prompt adegan, tanpa judul.`
     : `Kamu menulis prompt untuk AI menggambar SATU panel komik/manga (bukan foto).
 Perluas ide pengguna menjadi paragraf naratif yang menggambarkan adegan lengkap: siapa, apa yang terjadi, emosi, pose, latar, cahaya.
 Jangan output daftar label seperti "Manga Jepang, gaya komik, medium shot Luna" — itu SALAH.
 Benar: cerita visual panel + sisipkan gaya ${styleLabel}${anglePhrase ? ' dan ' + anglePhrase : ''} di awal/akhir secara ringkas.
 ${speechRules}
-Bahasa Indonesia. 80–150 kata. Hanya teks prompt adegan.`;
+Bahasa Indonesia. ${getEnhanceWordRange(speech)} Hanya teks prompt adegan.`;
 
   const userBlock = `IDE ADEGAN (wajib diperluas dan tetap jadi inti cerita):
 """
@@ -782,9 +811,49 @@ ${propLines ? `\nDetail karakter:\n${propLines}` : ''}`;
     contents: [{ parts: [{ text: `${instruction}\n\n${userBlock}` }] }],
     generationConfig: {
       temperature: strictMode ? 0.65 : 0.8,
-      maxOutputTokens: 800
+      maxOutputTokens: ENHANCE_MAX_OUTPUT_TOKENS
     }
   };
+}
+
+function buildEnhanceContinuationPayload(partialText, briefPrompt, comicOptions) {
+  const speech = analyzeSpeechInBrief(briefPrompt, comicOptions);
+  return {
+    contents: [{
+      parts: [{
+        text: `Prompt adegan komik berikut TERPOTONG. Lanjutkan dari potongan terakhir tanpa mengulang awal.
+Selesaikan kalimat yang putus dan lengkapi semua speech/thought/caption box yang belum selesai.
+${getEnhanceWordRange(speech)}
+Hanya keluarkan LANJUTAN teks (bukan ulang dari awal).
+
+POTONGAN:
+"""
+${partialText.trim()}
+"""`
+      }]
+    }],
+    generationConfig: {
+      temperature: 0.5,
+      maxOutputTokens: ENHANCE_CONTINUATION_MAX_TOKENS
+    }
+  };
+}
+
+function mergeEnhancedParts(base, continuation) {
+  const a = String(base || '').trim();
+  const b = String(continuation || '').trim();
+  if (!b) return a;
+  if (b.startsWith(a)) return b;
+  if (a.endsWith(b) || a.includes(b)) return a;
+  const overlap = Math.min(a.length, b.length, 120);
+  for (let len = overlap; len >= 12; len--) {
+    const suffix = a.slice(-len);
+    if (b.startsWith(suffix)) {
+      return a + b.slice(len);
+    }
+  }
+  const joiner = /[\s\-—,:]$/.test(a) ? '' : ' ';
+  return a + joiner + b;
 }
 
 function cleanEnhancedText(text) {
@@ -813,7 +882,20 @@ async function enhanceScenePrompt(briefPrompt, references, characterProperties, 
         );
         console.log('Enhancing scene prompt with', modelId, strictMode ? '(strict)' : '');
         const response = await callGeminiGenerateContent(modelId, payload);
+        const finishReason = getGeminiFinishReason(response);
         let text = cleanEnhancedText(extractGeminiText(response));
+
+        if (isTruncatedEnhanceText(text, finishReason)) {
+          console.warn('Enhance output truncated, requesting continuation');
+          try {
+            const contPayload = buildEnhanceContinuationPayload(text, briefPrompt, comicOptions);
+            const contResponse = await callGeminiGenerateContent(modelId, contPayload);
+            const contText = cleanEnhancedText(extractGeminiText(contResponse));
+            text = cleanEnhancedText(mergeEnhancedParts(text, contText));
+          } catch (contErr) {
+            console.warn('Enhance continuation failed:', contErr.message);
+          }
+        }
 
         if (isWeakEnhanceOutput(text, briefPrompt)) {
           console.warn('Weak enhance output, retry or fallback');
