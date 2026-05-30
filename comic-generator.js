@@ -425,7 +425,12 @@ export function createComicGeneratorPage() {
           refs.promptInput.value = data.data.prompt;
         }
         const modelMsg = data.data.model_used ? ` (${data.data.model_used})` : '';
-        layout.toast('Prompt adegan diperhalus' + modelMsg, { type: 'success' });
+        const truncated = /\s(dan|yang|dengan|sambil|di|ke|pada)\s*$/i.test(data.data.prompt.trim())
+          || (data.data.prompt.length > 80 && !/[.!?…]$/.test(data.data.prompt.trim()));
+        layout.toast(
+          (truncated ? 'Prompt masih terpotong — coba Perhalus lagi atau Generate (akan dilengkapi otomatis)' : 'Prompt adegan diperhalus') + modelMsg,
+          { type: truncated ? 'warning' : 'success' }
+        );
       } else {
         layout.toast('Gagal memperhalus prompt: ' + (data.error || 'Unknown error'), { type: 'error' });
       }
@@ -475,6 +480,7 @@ export function createComicGeneratorPage() {
           prompt: state.prompt,
           reference_ids: selectedReferences,
           character_properties: characterProperties,
+          prompt_model: state.promptModel,
           image_model: state.imageModel,
           comic_options: getComicOptions()
         })
@@ -483,6 +489,11 @@ export function createComicGeneratorPage() {
       const data = await res.json();
 
       if (data.success) {
+        if (data.data.prompt_completed && data.data.prompt) {
+          state.prompt = data.data.prompt;
+          if (refs.promptInput) refs.promptInput.value = data.data.prompt;
+          layout.toast('Prompt terpotong telah dilengkapi otomatis sebelum generate', { type: 'info' });
+        }
         const generatedAt = new Date().toLocaleString();
         const imageSrc = toImageSrc(data.data.image_base64);
         const newImage = buildGalleryCard({

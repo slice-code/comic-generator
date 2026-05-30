@@ -350,7 +350,7 @@ const server = http.createServer(async (req, res) => {
     // POST /api/generate - Generate comic image
     if (req.method === 'POST' && req.url === '/api/generate') {
       const body = await parseBody(req);
-      const { prompt, reference_ids, image_model, comic_options } = body;
+      const { prompt, reference_ids, image_model, comic_options, character_properties, prompt_model } = body;
 
       if (!prompt) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -383,9 +383,17 @@ const server = http.createServer(async (req, res) => {
           }
 
           try {
-            // Call Gemini Nano Banana API
+            const completedPrompt = await ensureCompleteScenePrompt(
+              String(prompt).trim(),
+              references,
+              character_properties || {},
+              comic_options || {},
+              resolvePromptModel(prompt_model)
+            );
+            const finalPrompt = completedPrompt.text;
+
             const geminiResult = await callGeminiAPI(
-              prompt,
+              finalPrompt,
               references,
               resolveImageModel(image_model),
               comic_options || {}
@@ -395,7 +403,7 @@ const server = http.createServer(async (req, res) => {
             const refIdsJson = JSON.stringify(reference_ids);
             db.run(
               'INSERT INTO generations (prompt, image_base64, reference_ids) VALUES (?, ?, ?)',
-              [prompt, geminiResult.image_base64, refIdsJson],
+              [finalPrompt, geminiResult.image_base64, refIdsJson],
               function(saveErr) {
                 if (saveErr) {
                   console.error('Failed to save generation:', saveErr);
@@ -408,7 +416,8 @@ const server = http.createServer(async (req, res) => {
               success: true, 
               data: { 
                 image_base64: geminiResult.image_base64,
-                prompt: prompt,
+                prompt: finalPrompt,
+                prompt_completed: completedPrompt.completed,
                 references_used: references.map(r => ({ name: r.name, type: r.type }))
               } 
             }));
@@ -555,11 +564,13 @@ function extractGeminiText(response) {
     throw new Error('No response from Gemini');
   }
   const parts = candidates[0].content?.parts || [];
-  const textPart = parts.find(p => p.text);
-  if (!textPart || !textPart.text) {
+  const chunks = parts
+    .map(p => (p && p.text ? String(p.text) : ''))
+    .filter(Boolean);
+  if (chunks.length === 0) {
     throw new Error('No text response from Gemini');
   }
-  return textPart.text.trim();
+  return chunks.join('').trim();
 }
 
 /** Respons enhance terpotong di tengah kalimat / token habis */
@@ -723,6 +734,7 @@ function buildSpeechInstructionBlock(speech) {
 /** Deteksi output AI yang hanya daftar pengaturan, bukan adegan */
 function isWeakEnhanceOutput(text, briefPrompt) {
   const t = text.trim();
+  if (isTruncatedEnhanceText(t, '')) return true;
   const brief = briefPrompt.trim().toLowerCase();
   if (t.length < 50) return true;
 
@@ -777,26 +789,18 @@ function buildEnhancePromptPayload(briefPrompt, references, characterProperties,
 
   const { styleLabel, anglePhrase } = getComicOptionLabels(comicOptions);
   const speech = analyzeSpeechInBrief(briefPrompt, comicOptions);
-  const speechRules = `ATURAN TEKS DI PANEL:
-- Dialog antar karakter → speech bubble (gelembung oval), sebut teks persis jika ada.
-- Berbicara dengan diri sendiri / monolog → thought bubble (awan), jangan campur dengan dialog orang lain.
-- Narasi pihak ketiga → kotak caption terpisah (bukan speech bubble).
-${buildSpeechInstructionBlock(speech)}`;
+  const speechRules = (speech.hasDialogue || speech.hasMonologue || speech.narrator || speech.dialogueLines.length)
+    ? buildSpeechInstructionBlock(speech)
+    : '';
 
   const instruction = strictMode
-    ? `Tulis SATU paragraf deskripsi visual adegan komik dalam Bahasa Indonesia.
-WAJIB ceritakan apa yang TERJADI di panel (aksi, emosi, latar, pose) berdasarkan ide pengguna.
-LARANGAN: jangan hanya menulis "manga, gaya komik, medium shot" atau daftar pengaturan.
-Contoh BENAR: "Panel manga, medium shot: Luna terpojok di lorong gua, speech bubble \"Aku tidak bisa kabur!\", thought bubble kecil \"Tenang... napas dulu.\", kotak narasi di atas: Malam itu gua terasa lebih sempit."
-Sisipkan secara natural: gaya ${styleLabel}${anglePhrase ? ', ' + anglePhrase : ''}, bukan foto.
-${speechRules}
-${getEnhanceWordRange(speech)} Output HANYA paragraf prompt adegan, tanpa judul.`
-    : `Kamu menulis prompt untuk AI menggambar SATU panel komik/manga (bukan foto).
-Perluas ide pengguna menjadi paragraf naratif yang menggambarkan adegan lengkap: siapa, apa yang terjadi, emosi, pose, latar, cahaya.
-Jangan output daftar label seperti "Manga Jepang, gaya komik, medium shot Luna" — itu SALAH.
-Benar: cerita visual panel + sisipkan gaya ${styleLabel}${anglePhrase ? ' dan ' + anglePhrase : ''} di awal/akhir secara ringkas.
-${speechRules}
-Bahasa Indonesia. ${getEnhanceWordRange(speech)} Hanya teks prompt adegan.`;
+    ? `Tulis SATU paragraf lengkap (Bahasa Indonesia) untuk panel komik ${styleLabel}${anglePhrase ? ', ' + anglePhrase : ''}.
+WAJIB: adegan utuh — aksi, emosi, latar, pose. Akhiri paragraf dengan kalimat selesai (titik). Jangan berhenti di tengah.
+LARANGAN: hanya label gaya; jangan berhenti setelah "Dalam gaya manga, tampilkan..." tanpa detail lanjutan.
+${speechRules ? speechRules + '\n' : ''}${getEnhanceWordRange(speech)} Hanya teks prompt.`
+    : `Perluas ide menjadi SATU paragraf prompt ilustrasi komik ${styleLabel}, bukan foto.
+Ceritakan adegan lengkap sampai tuntas (kalimat terakhir harus selesai). Jangan potong di kata penghubung seperti "dan", "yang", "dengan".
+${speechRules ? speechRules + '\n' : ''}${getEnhanceWordRange(speech)} Hanya prompt adegan.`;
 
   const userBlock = `IDE ADEGAN (wajib diperluas dan tetap jadi inti cerita):
 """
@@ -818,25 +822,71 @@ ${propLines ? `\nDetail karakter:\n${propLines}` : ''}`;
 
 function buildEnhanceContinuationPayload(partialText, briefPrompt, comicOptions) {
   const speech = analyzeSpeechInBrief(briefPrompt, comicOptions);
+  const userBlock = `IDE ASLI:\n"""\n${briefPrompt.trim()}\n"""`;
   return {
-    contents: [{
-      parts: [{
-        text: `Prompt adegan komik berikut TERPOTONG. Lanjutkan dari potongan terakhir tanpa mengulang awal.
-Selesaikan kalimat yang putus dan lengkapi semua speech/thought/caption box yang belum selesai.
-${getEnhanceWordRange(speech)}
-Hanya keluarkan LANJUTAN teks (bukan ulang dari awal).
-
-POTONGAN:
-"""
-${partialText.trim()}
-"""`
-      }]
-    }],
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: `Tulis prompt adegan komik lengkap.\n${userBlock}\n${getEnhanceWordRange(speech)}` }]
+      },
+      {
+        role: 'model',
+        parts: [{ text: partialText.trim() }]
+      },
+      {
+        role: 'user',
+        parts: [{
+          text: `Teks di atas TERPOTONG di tengah. Lanjutkan persis dari akhir teks tanpa mengulang awal.
+Selesaikan kalimat yang putus, tambahkan detail adegan, dialog/bubble jika perlu, dan akhiri paragraf dengan kalimat utuh.
+Hanya keluarkan LANJUTAN (sisa teks).`
+        }]
+      }
+    ],
     generationConfig: {
-      temperature: 0.5,
+      temperature: 0.45,
       maxOutputTokens: ENHANCE_CONTINUATION_MAX_TOKENS
     }
   };
+}
+
+async function continueEnhanceText(modelId, partialText, briefPrompt, comicOptions, maxRounds = 3) {
+  let merged = partialText.trim();
+  for (let i = 0; i < maxRounds; i++) {
+    if (!isTruncatedEnhanceText(merged, '')) break;
+    const contPayload = buildEnhanceContinuationPayload(merged, briefPrompt, comicOptions);
+    const contResponse = await callGeminiGenerateContent(modelId, contPayload);
+    const contText = cleanEnhancedText(extractGeminiText(contResponse));
+    if (!contText) break;
+    merged = cleanEnhancedText(mergeEnhancedParts(merged, contText));
+  }
+  return merged;
+}
+
+async function ensureCompleteScenePrompt(scenePrompt, references, characterProperties, comicOptions, preferredModel) {
+  const trimmed = String(scenePrompt || '').trim();
+  if (!trimmed) return { text: trimmed, completed: false };
+
+  if (!isTruncatedEnhanceText(trimmed, '')) {
+    return { text: trimmed, completed: false };
+  }
+
+  console.warn('Scene prompt truncated, auto-completing before generate');
+  const tryOrder = [...new Set([preferredModel || DEFAULT_PROMPT_MODEL, ...PROMPT_MODEL_FALLBACKS])];
+
+  for (const modelId of tryOrder) {
+    try {
+      let text = await continueEnhanceText(modelId, trimmed, trimmed, comicOptions, 3);
+      if (!isTruncatedEnhanceText(text, '')) {
+        return { text, completed: true, modelUsed: modelId };
+      }
+    } catch (err) {
+      console.warn('Auto-complete failed on', modelId, err.message);
+      if (!isModelUnavailableError(err.message)) break;
+    }
+  }
+
+  const fallback = buildFallbackComicPrompt(trimmed, references, comicOptions);
+  return { text: fallback, completed: true, modelUsed: 'fallback' };
 }
 
 function mergeEnhancedParts(base, continuation) {
@@ -888,10 +938,7 @@ async function enhanceScenePrompt(briefPrompt, references, characterProperties, 
         if (isTruncatedEnhanceText(text, finishReason)) {
           console.warn('Enhance output truncated, requesting continuation');
           try {
-            const contPayload = buildEnhanceContinuationPayload(text, briefPrompt, comicOptions);
-            const contResponse = await callGeminiGenerateContent(modelId, contPayload);
-            const contText = cleanEnhancedText(extractGeminiText(contResponse));
-            text = cleanEnhancedText(mergeEnhancedParts(text, contText));
+            text = await continueEnhanceText(modelId, text, briefPrompt, comicOptions, 3);
           } catch (contErr) {
             console.warn('Enhance continuation failed:', contErr.message);
           }
@@ -900,6 +947,10 @@ async function enhanceScenePrompt(briefPrompt, references, characterProperties, 
         if (isWeakEnhanceOutput(text, briefPrompt)) {
           console.warn('Weak enhance output, retry or fallback');
           if (!strictMode) continue;
+          text = buildFallbackComicPrompt(briefPrompt, references, comicOptions);
+        }
+
+        if (isTruncatedEnhanceText(text, '')) {
           text = buildFallbackComicPrompt(briefPrompt, references, comicOptions);
         }
 
