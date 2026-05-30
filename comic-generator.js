@@ -63,14 +63,18 @@ export function createComicGeneratorPage() {
     imageModel: 'gemini-2.5-flash-image',
     comicStyle: 'manga',
     cameraAngle: 'medium',
-    narrator: ''
+    narrator: '',
+    dialogue: '',
+    speechMode: 'auto'
   };
 
   function getComicOptions() {
     return {
       comic_style: state.comicStyle,
       camera_angle: state.cameraAngle,
-      narrator: state.narrator.trim()
+      narrator: state.narrator.trim(),
+      dialogue: state.dialogue.trim(),
+      speech_mode: state.speechMode
     };
   }
 
@@ -1119,6 +1123,27 @@ export function createComicGeneratorPage() {
                 state.cameraAngle = this.value;
               })
             ]),
+            el('div').css({ marginBottom: '0.5rem' }).child([
+              el('label').text('Teks di panel').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
+              el('select').link(refs, 'speechModeSelect').css({ ...inputStyle, fontSize: '0.8rem' }).child([
+                el('option').text('Otomatis (deteksi dari adegan)').attr('value', 'auto'),
+                el('option').text('Dialog (speech bubble)').attr('value', 'dialogue'),
+                el('option').text('Monolog / bicara pada diri sendiri (thought bubble)').attr('value', 'monologue'),
+                el('option').text('Dialog + monolog').attr('value', 'both'),
+                el('option').text('Tanpa teks di panel').attr('value', 'none')
+              ]).change(function() {
+                state.speechMode = this.value;
+              })
+            ]),
+            el('div').css({ marginBottom: '0.5rem' }).child([
+              el('label').text('Dialog (speech bubble)').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
+              el('input').link(refs, 'dialogueInput').attr('type', 'text').attr('placeholder', 'Opsional: "Aku bisa melawan ini!"').css({
+                ...inputStyle,
+                fontSize: '0.8rem'
+              }).on('input', function(e) {
+                state.dialogue = e.target.value;
+              })
+            ]),
             el('div').child([
               el('label').text('Narator (caption box)').css({ display: 'block', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '0.25rem' }),
               el('input').link(refs, 'narratorInput').attr('type', 'text').attr('placeholder', 'Opsional: "Hari itu, Dina tidak menyangka..."').css({
@@ -1165,7 +1190,7 @@ export function createComicGeneratorPage() {
               marginBottom: '0.4rem',
               lineHeight: '1.4'
             }),
-            el('textarea').link(refs, 'promptInput').attr('placeholder', 'Contoh: Dina berjalan di hutan mencari jamur matsutake saat matahari terbenam.').css({
+            el('textarea').link(refs, 'promptInput').attr('placeholder', 'Contoh: Luna terpojok, berkata "Aku tidak bisa kabur!" sambil berbicara dengan diri sendiri "Tenang... napas dulu."').css({
               width: '100%',
               minHeight: '140px',
               background: '#0f172a',

@@ -146,10 +146,9 @@ const CAMERA_ANGLE_PROMPTS = {
 /**
  * Build comic/manga-specific instructions appended to image prompts.
  */
-function buildComicSceneContext(comicOptions = {}) {
+function buildComicSceneContext(comicOptions = {}, scenePrompt = '') {
   const style = comicOptions.comic_style || 'manga';
   const angle = comicOptions.camera_angle || 'medium';
-  const narrator = String(comicOptions.narrator || '').trim();
 
   const lines = [
     'IMPORTANT: Generate ONE comic/manga panel illustration. NOT a photorealistic photograph. NOT 3D render.',
@@ -160,11 +159,8 @@ function buildComicSceneContext(comicOptions = {}) {
     lines.push(CAMERA_ANGLE_PROMPTS[angle]);
   }
 
-  lines.push('Include clear panel borders or comic framing. Speech bubbles or caption boxes if dialogue/narration exists.');
-
-  if (narrator) {
-    lines.push(`Narration caption box text (in Indonesian): "${narrator}". Show as manga/comic narration box (not plain subtitle).`);
-  }
+  lines.push('Include clear panel borders or comic framing.');
+  lines.push(buildSpeechInstructionBlock(analyzeSpeechInBrief(scenePrompt, comicOptions)));
 
   return lines.join('\n');
 }
@@ -617,7 +613,82 @@ function getComicOptionLabels(comicOptions = {}) {
     dutch: 'dutch angle miring dramatis',
     profile: 'profil dari samping'
   }[angle] || '';
-  return { styleLabel, anglePhrase, narrator: String(comicOptions.narrator || '').trim() };
+  return {
+    styleLabel,
+    anglePhrase,
+    narrator: String(comicOptions.narrator || '').trim(),
+    dialogue: String(comicOptions.dialogue || '').trim(),
+    speechMode: comicOptions.speech_mode || 'auto'
+  };
+}
+
+/** Deteksi dialog, monolog, dll. dari teks adegan + pengaturan pengguna */
+function analyzeSpeechInBrief(briefPrompt, comicOptions = {}) {
+  const brief = String(briefPrompt || '').trim();
+  const { dialogue, narrator, speechMode } = getComicOptionLabels(comicOptions);
+
+  const quoted = [];
+  const patterns = [
+    /[“"]([^”"]+)[”"]/g,
+    /'([^']+)'/g,
+    /「([^」]+)」/g
+  ];
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(brief)) !== null) {
+      const line = (m[1] || '').trim();
+      if (line.length > 0) quoted.push(line);
+    }
+  }
+
+  const hasMonologueHint = /berbicara dengan diri sendiri|berbicara pada diri|monolog|bergumam|dalam hatinya|dalam pikirannya|berpikir keras|membatin|mengomong pada diri|berbicara sendiri|menggeram pada diri/i.test(brief);
+  const hasDialogueHint = /bilang|berkata|teriak|bertanya|menjawab|berseru|berbicara kepada|berbicara ke|dialog|ucap|pesan\s*:/i.test(brief)
+    || quoted.length > 0
+    || dialogue.length > 0;
+
+  let mode = speechMode;
+  if (mode === 'auto') {
+    if (hasMonologueHint && (hasDialogueHint || dialogue || quoted.length)) mode = 'both';
+    else if (hasMonologueHint) mode = 'monologue';
+    else if (hasDialogueHint || dialogue || quoted.length) mode = 'dialogue';
+    else mode = 'none';
+  }
+
+  const dialogueLines = [...new Set([dialogue, ...quoted].filter(Boolean))];
+
+  return {
+    mode,
+    dialogueLines,
+    hasMonologue: mode === 'monologue' || mode === 'both' || hasMonologueHint,
+    hasDialogue: mode === 'dialogue' || mode === 'both' || dialogueLines.length > 0,
+    narrator
+  };
+}
+
+function buildSpeechInstructionBlock(speech) {
+  const lines = [];
+
+  if (speech.narrator) {
+    lines.push(`Kotak narasi (caption box persegi panjang, pihak ketiga): "${speech.narrator}"`);
+  }
+
+  if (speech.hasDialogue && speech.dialogueLines.length) {
+    speech.dialogueLines.forEach((line, i) => {
+      lines.push(`Gelembung dialog / speech bubble ${i + 1} (oval, ujung menunjuk mulut karakter): "${line}"`);
+    });
+  } else if (speech.hasDialogue) {
+    lines.push('Ada dialog antar karakter: tampilkan speech bubble dengan teks dialog yang disebut di adegan (teks harus terbaca).');
+  }
+
+  if (speech.hasMonologue) {
+    lines.push('Karakter berbicara dengan diri sendiri / monolog internal: gunakan thought bubble (gumpalan awan), BUKAN speech bubble biasa. Ekspresi introspektif.');
+  }
+
+  if (!speech.hasDialogue && !speech.hasMonologue && !speech.narrator) {
+    lines.push('Tidak ada teks dialog/narasi di panel kecuali disebut eksplisit di adegan.');
+  }
+
+  return lines.join('\n');
 }
 
 /** Deteksi output AI yang hanya daftar pengaturan, bukan adegan */
@@ -642,15 +713,17 @@ function isWeakEnhanceOutput(text, briefPrompt) {
 }
 
 function buildFallbackComicPrompt(briefPrompt, references, comicOptions) {
-  const { styleLabel, anglePhrase, narrator } = getComicOptionLabels(comicOptions);
+  const { styleLabel, anglePhrase } = getComicOptionLabels(comicOptions);
+  const speech = analyzeSpeechInBrief(briefPrompt, comicOptions);
   const names = references.map(r => r.name).filter(Boolean);
   const angleBit = anglePhrase ? `, ${anglePhrase}` : '';
   const charBit = names.length ? ` Karakter: ${names.join(', ')}.` : '';
-  const narrBit = narrator ? ` Kotak narasi berisi: "${narrator}".` : '';
+  const speechBit = buildSpeechInstructionBlock(speech);
+  const speechSuffix = speechBit ? ` ${speechBit.replace(/\n/g, ' ')}` : '';
   return (
     `Panel ilustrasi ${styleLabel}${angleBit}, satu frame komik (bukan foto): ${briefPrompt.trim()}.` +
     `${charBit} Ekspresi dan pose jelas, latar detail, pencahayaan dramatis, line art tebal, cel shading, warna flat komik.` +
-    narrBit
+    speechSuffix
   );
 }
 
@@ -673,21 +746,27 @@ function buildEnhancePromptPayload(briefPrompt, references, characterProperties,
     .filter(Boolean)
     .join('\n');
 
-  const { styleLabel, anglePhrase, narrator } = getComicOptionLabels(comicOptions);
+  const { styleLabel, anglePhrase } = getComicOptionLabels(comicOptions);
+  const speech = analyzeSpeechInBrief(briefPrompt, comicOptions);
+  const speechRules = `ATURAN TEKS DI PANEL:
+- Dialog antar karakter → speech bubble (gelembung oval), sebut teks persis jika ada.
+- Berbicara dengan diri sendiri / monolog → thought bubble (awan), jangan campur dengan dialog orang lain.
+- Narasi pihak ketiga → kotak caption terpisah (bukan speech bubble).
+${buildSpeechInstructionBlock(speech)}`;
 
   const instruction = strictMode
     ? `Tulis SATU paragraf deskripsi visual adegan komik dalam Bahasa Indonesia.
 WAJIB ceritakan apa yang TERJADI di panel (aksi, emosi, latar, pose) berdasarkan ide pengguna.
 LARANGAN: jangan hanya menulis "manga, gaya komik, medium shot" atau daftar pengaturan.
-Contoh BENAR: "Panel manga, medium shot: Luna terpojok di lorong gua oleh lima kobold yang mengelilingnya, tubuh gemetar, pedang di tangan, mata penuh ketakutan, obor kobold menerangi dinding batu, line art tebal dan cel shading dramatis."
+Contoh BENAR: "Panel manga, medium shot: Luna terpojok di lorong gua, speech bubble \"Aku tidak bisa kabur!\", thought bubble kecil \"Tenang... napas dulu.\", kotak narasi di atas: Malam itu gua terasa lebih sempit."
 Sisipkan secara natural: gaya ${styleLabel}${anglePhrase ? ', ' + anglePhrase : ''}, bukan foto.
-${narrator ? `Sertakan caption: "${narrator}".` : ''}
+${speechRules}
 Output HANYA paragraf prompt adegan, tanpa judul.`
     : `Kamu menulis prompt untuk AI menggambar SATU panel komik/manga (bukan foto).
 Perluas ide pengguna menjadi paragraf naratif yang menggambarkan adegan lengkap: siapa, apa yang terjadi, emosi, pose, latar, cahaya.
 Jangan output daftar label seperti "Manga Jepang, gaya komik, medium shot Luna" — itu SALAH.
 Benar: cerita visual panel + sisipkan gaya ${styleLabel}${anglePhrase ? ' dan ' + anglePhrase : ''} di awal/akhir secara ringkas.
-${narrator ? `Caption box: "${narrator}".` : ''}
+${speechRules}
 Bahasa Indonesia. 80–150 kata. Hanya teks prompt adegan.`;
 
   const userBlock = `IDE ADEGAN (wajib diperluas dan tetap jadi inti cerita):
@@ -794,7 +873,7 @@ async function callGeminiAPI(prompt, references, imageModel, comicOptions = {}) 
     });
   }
 
-  const comicContext = buildComicSceneContext(comicOptions);
+  const comicContext = buildComicSceneContext(comicOptions, prompt);
   parts.push({
     text: `${comicContext}\n\nScene to illustrate:\n${prompt}`
   });
