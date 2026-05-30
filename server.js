@@ -602,13 +602,62 @@ function callGeminiGenerateContent(model, payload) {
   });
 }
 
-/**
- * Expand a brief scene idea into a detailed comic panel prompt (text model).
- */
-async function enhanceScenePrompt(briefPrompt, references, characterProperties, preferredModel, comicOptions = {}) {
+function getComicOptionLabels(comicOptions = {}) {
+  const style = comicOptions.comic_style || 'manga';
+  const angle = comicOptions.camera_angle || 'medium';
+  const styleLabel = { manga: 'manga', comic: 'comic book', manhwa: 'manhwa', webtoon: 'webtoon' }[style] || 'manga';
+  const anglePhrase = {
+    auto: '',
+    close_up: 'close-up pada wajah',
+    medium: 'medium shot (bahu ke atas)',
+    wide: 'wide shot (seluruh tubuh dan lingkungan)',
+    birds_eye: 'sudut dari atas (bird\'s eye)',
+    worms_eye: 'sudut dari bawah (worm\'s eye)',
+    over_shoulder: 'over-the-shoulder',
+    dutch: 'dutch angle miring dramatis',
+    profile: 'profil dari samping'
+  }[angle] || '';
+  return { styleLabel, anglePhrase, narrator: String(comicOptions.narrator || '').trim() };
+}
+
+/** Deteksi output AI yang hanya daftar pengaturan, bukan adegan */
+function isWeakEnhanceOutput(text, briefPrompt) {
+  const t = text.trim();
+  const brief = briefPrompt.trim().toLowerCase();
+  if (t.length < 50) return true;
+
+  const briefTokens = brief.split(/\s+/).filter(w => w.length >= 4);
+  const matched = briefTokens.filter(w => t.toLowerCase().includes(w.slice(0, Math.max(4, w.length - 1))));
+  if (briefTokens.length >= 2 && matched.length === 0) return true;
+
+  const settingsOnly = /^(panel\s+)?(manga|manhwa|webtoon|comic).{0,120}(gaya|line art|cel shading|medium shot|wide shot|close-up)/i.test(t)
+    && t.length < 180
+    && matched.length <= 1;
+  if (settingsOnly) return true;
+
+  const commaList = (t.match(/,/g) || []).length >= 3 && t.length < 120 && matched.length === 0;
+  if (commaList) return true;
+
+  return false;
+}
+
+function buildFallbackComicPrompt(briefPrompt, references, comicOptions) {
+  const { styleLabel, anglePhrase, narrator } = getComicOptionLabels(comicOptions);
+  const names = references.map(r => r.name).filter(Boolean);
+  const angleBit = anglePhrase ? `, ${anglePhrase}` : '';
+  const charBit = names.length ? ` Karakter: ${names.join(', ')}.` : '';
+  const narrBit = narrator ? ` Kotak narasi berisi: "${narrator}".` : '';
+  return (
+    `Panel ilustrasi ${styleLabel}${angleBit}, satu frame komik (bukan foto): ${briefPrompt.trim()}.` +
+    `${charBit} Ekspresi dan pose jelas, latar detail, pencahayaan dramatis, line art tebal, cel shading, warna flat komik.` +
+    narrBit
+  );
+}
+
+function buildEnhancePromptPayload(briefPrompt, references, characterProperties, comicOptions, strictMode) {
   const refLines = references.length
     ? references.map(r => `- ${r.name} (${r.type})`).join('\n')
-    : '(tidak ada referensi dipilih)';
+    : '(tidak ada)';
 
   const propLines = references
     .map(r => {
@@ -624,72 +673,89 @@ async function enhanceScenePrompt(briefPrompt, references, characterProperties, 
     .filter(Boolean)
     .join('\n');
 
-  const style = comicOptions.comic_style || 'manga';
-  const angle = comicOptions.camera_angle || 'medium';
-  const narrator = String(comicOptions.narrator || '').trim();
-  const styleLabel = { manga: 'manga Jepang', comic: 'comic book Amerika', manhwa: 'manhwa Korea', webtoon: 'webtoon' }[style] || 'manga';
-  const angleLabel = {
-    auto: 'sesuai adegan',
-    close_up: 'close-up',
-    medium: 'medium shot',
-    wide: 'wide shot',
-    birds_eye: 'bird\'s eye',
-    worms_eye: 'worm\'s eye',
-    over_shoulder: 'over-the-shoulder',
-    dutch: 'dutch angle',
-    profile: 'profil/samping'
-  }[angle] || 'medium shot';
+  const { styleLabel, anglePhrase, narrator } = getComicOptionLabels(comicOptions);
 
-  const instruction = `Kamu adalah penulis prompt untuk AI yang menggambar PANEL KOMIK/MANGA (bukan foto realistis).
-Perluas ide adegan singkat menjadi prompt detail untuk satu panel komik.
-WAJIB sertakan: gaya ilustrasi ${styleLabel}, sudut pandang ${angleLabel}, line art komik, cel shading/warna flat komik, komposisi panel, latar, pencahayaan dramatis komik, aksi & ekspresi karakter.
-Jangan deskripsikan sebagai fotografi atau render 3D. Gunakan nama referensi.
-${narrator ? 'Sertakan kotak narasi/caption komik untuk teks narator yang diberikan.' : ''}
-Tulis prompt final dalam Bahasa Indonesia (istilah visual boleh Inggris). Maksimal 140 kata.
-Output HANYA teks prompt siap pakai untuk generate gambar, tanpa judul atau penjelasan.`;
+  const instruction = strictMode
+    ? `Tulis SATU paragraf deskripsi visual adegan komik dalam Bahasa Indonesia.
+WAJIB ceritakan apa yang TERJADI di panel (aksi, emosi, latar, pose) berdasarkan ide pengguna.
+LARANGAN: jangan hanya menulis "manga, gaya komik, medium shot" atau daftar pengaturan.
+Contoh BENAR: "Panel manga, medium shot: Luna terpojok di lorong gua oleh lima kobold yang mengelilingnya, tubuh gemetar, pedang di tangan, mata penuh ketakutan, obor kobold menerangi dinding batu, line art tebal dan cel shading dramatis."
+Sisipkan secara natural: gaya ${styleLabel}${anglePhrase ? ', ' + anglePhrase : ''}, bukan foto.
+${narrator ? `Sertakan caption: "${narrator}".` : ''}
+Output HANYA paragraf prompt adegan, tanpa judul.`
+    : `Kamu menulis prompt untuk AI menggambar SATU panel komik/manga (bukan foto).
+Perluas ide pengguna menjadi paragraf naratif yang menggambarkan adegan lengkap: siapa, apa yang terjadi, emosi, pose, latar, cahaya.
+Jangan output daftar label seperti "Manga Jepang, gaya komik, medium shot Luna" — itu SALAH.
+Benar: cerita visual panel + sisipkan gaya ${styleLabel}${anglePhrase ? ' dan ' + anglePhrase : ''} di awal/akhir secara ringkas.
+${narrator ? `Caption box: "${narrator}".` : ''}
+Bahasa Indonesia. 80–150 kata. Hanya teks prompt adegan.`;
 
-  const userBlock = `Ide adegan singkat:
-${briefPrompt}
+  const userBlock = `IDE ADEGAN (wajib diperluas dan tetap jadi inti cerita):
+"""
+${briefPrompt.trim()}
+"""
 
-Gaya komik: ${styleLabel}
-Sudut pandang: ${angleLabel}
-${narrator ? `Teks narator (caption box): ${narrator}` : 'Narator: (tidak ada)'}
-
-Referensi yang dipakai:
+Karakter referensi (gunakan nama ini di adegan):
 ${refLines}
-${propLines ? `\nProperti karakter:\n${propLines}` : ''}`;
+${propLines ? `\nDetail karakter:\n${propLines}` : ''}`;
 
-  const payload = {
-    contents: [{
-      parts: [{ text: `${instruction}\n\n${userBlock}` }]
-    }],
+  return {
+    contents: [{ parts: [{ text: `${instruction}\n\n${userBlock}` }] }],
     generationConfig: {
-      temperature: 0.85,
-      maxOutputTokens: 600
+      temperature: strictMode ? 0.65 : 0.8,
+      maxOutputTokens: 800
     }
   };
+}
 
+function cleanEnhancedText(text) {
+  let t = text.replace(/^```[\w]*\n?|```$/g, '').trim();
+  t = t.replace(/^["']|["']$/g, '').trim();
+  t = t.replace(/^(prompt|adegan|hasil)\s*:\s*/i, '').trim();
+  return t;
+}
+
+/**
+ * Expand a brief scene idea into a detailed comic panel prompt (text model).
+ */
+async function enhanceScenePrompt(briefPrompt, references, characterProperties, preferredModel, comicOptions = {}) {
   const tryOrder = [...new Set([preferredModel, ...PROMPT_MODEL_FALLBACKS])];
   let lastError = null;
 
   for (const modelId of tryOrder) {
-    try {
-      console.log('Enhancing scene prompt with', modelId);
-      const response = await callGeminiGenerateContent(modelId, payload);
-      let text = extractGeminiText(response);
-      text = text.replace(/^```[\w]*\n?|```$/g, '').trim();
-      text = text.replace(/^["']|["']$/g, '').trim();
-      return { text, modelUsed: modelId };
-    } catch (err) {
-      lastError = err;
-      console.warn('Enhance failed on', modelId, err.message);
-      if (!isModelUnavailableError(err.message)) {
-        throw err;
+    for (const strictMode of [false, true]) {
+      try {
+        const payload = buildEnhancePromptPayload(
+          briefPrompt,
+          references,
+          characterProperties,
+          comicOptions,
+          strictMode
+        );
+        console.log('Enhancing scene prompt with', modelId, strictMode ? '(strict)' : '');
+        const response = await callGeminiGenerateContent(modelId, payload);
+        let text = cleanEnhancedText(extractGeminiText(response));
+
+        if (isWeakEnhanceOutput(text, briefPrompt)) {
+          console.warn('Weak enhance output, retry or fallback');
+          if (!strictMode) continue;
+          text = buildFallbackComicPrompt(briefPrompt, references, comicOptions);
+        }
+
+        return { text, modelUsed: modelId };
+      } catch (err) {
+        lastError = err;
+        console.warn('Enhance failed on', modelId, err.message);
+        if (!isModelUnavailableError(err.message)) {
+          throw err;
+        }
+        break;
       }
     }
   }
 
-  throw lastError || new Error('Semua model prompt gagal. Cek GEMINI_API_KEY dan pilihan model.');
+  const fallback = buildFallbackComicPrompt(briefPrompt, references, comicOptions);
+  return { text: fallback, modelUsed: 'fallback' };
 }
 
 /**
